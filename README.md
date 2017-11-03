@@ -27,7 +27,11 @@ few directives I used back in ~2005.
 
 - [x] `<!--#if expr="..."--><!--#else--><!--#endif-->`
 - [x] `<!--#config timefmt="..."-->`
-- [x] `<!--#echo var="..."-->`
+- [ ] `<!--#echo var="..."-->` where var is ...
+  - [x] `DATE_LOCAL`
+  - [x] `DATE_GMT`
+  - [ ] `LAST_MODIFIED`
+  - [x] Any other environment variable
 - [x] `<!--#set var="..." value="..."-->`
 - [x] `<!--#include file="..."-->`
 - [ ] `<!--#include virtual="..." -->` (dependent on fixing initial bug).
