@@ -18,7 +18,7 @@ Features that are planned or implemented.
 - [x] Horrible assumptions ([See: Bugs](#bugs)).
 - [ ] Better-organized code (names, splits).
 - [ ] FastCGI env setup (currently just a cli script w/ config via env vars).
-- [ ] Rename executable from `ssi` to `haskell-ssi`. `(maybe)`
+- [ ] Rename executable from `ssi` to `haskell-ssi`. (maybe worksforme)
 
 # SSI Directives
 
@@ -31,6 +31,9 @@ few directives I used back in ~2005.
   - [x] `DATE_LOCAL`
   - [x] `DATE_GMT`
   - [ ] `LAST_MODIFIED`
+  - [ ] `DOCUMENT_URI` (might just copy from `$REQUEST_URI`) (maybe wontfix)
+  - [ ] `DOCUMENT_NAME` (maybe wontfix)
+  - [ ] `QUERY_STRING_UNESCAPED` (maybe wontfix)
   - [x] Any other environment variable
 - [x] `<!--#set var="..." value="..."-->`
 - [x] `<!--#include file="..."-->`
