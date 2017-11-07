@@ -304,8 +304,7 @@ ssiAddOutput env out =
    in env { ssiOutput = outs ++ [out] }
 
 evalAll :: StringLike str => SsiEnvironment -> [SsiExpr str] -> IO SsiEnvironment
-evalAll e [] = pure e
-evalAll e (t:ts) = eval e t >>= flip evalAll ts
+evalAll = foldM (flip eval)
 
 htmlcomment :: String -> String
 htmlcomment txt = renderTags [nl, TagComment $ castString txt, nl]
@@ -318,20 +317,20 @@ evalTagged :: StringLike str
 evalTagged e' x' = pure (addTag x' e') >>= eval x' >>= pure . endTag x'
   where
     addComments :: StringLike str => [str] -> SsiEnvironment -> SsiEnvironment
-    addComments out env@SsiEnvironment { ssiOutput = outs } =
-      env { ssiOutput = outs ++ (htmlcomment . toString <$> out) }
+    addComments out env =
+      foldl ssiAddOutput env (htmlcomment . toString <$> out)
 
     addTag :: StringLike str => SsiExpr str -> SsiEnvironment -> SsiEnvironment
     addTag x@(IfElse inner' _ _) env =
       let tf = fromBool $ evalInnerExprBool env $ safeParseInnerExpr inner'
-       in addComments ((maybeToList $ fn x) ++ [tf]) env
-    addTag expr env = addComments (maybeToList $ fn expr) env
+       in addComments ((maybeToList $ prn x) ++ [tf]) env
+    addTag expr env = addComments (maybeToList $ prn expr) env
 
     endTag :: StringLike str => SsiExpr str -> SsiEnvironment -> SsiEnvironment
     endTag (TimeFormat _) env = env
     endTag (SetVar _ _) env = env
     endTag expr env =
-      if isNothing $ fn expr
+      if isNothing $ prn expr
          then env
          else addComments ["/" ++ ctor expr] env
 
@@ -352,8 +351,8 @@ evalTagged e' x' = pure (addTag x' e') >>= eval x' >>= pure . endTag x'
         IncludeVirtual _ -> "IncludeVirtual"
         IncludeFile _ -> "IncludeFile"
 
-    fn :: StringLike str => SsiExpr str -> Maybe String
-    fn expr =
+    prn :: StringLike str => SsiExpr str -> Maybe String
+    prn expr =
       let args' :: StringLike str => [str] -> Maybe String
           args' = Just . functiony (ctor expr)
        in case expr of
