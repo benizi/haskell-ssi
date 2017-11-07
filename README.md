@@ -15,7 +15,6 @@ way to parse the few old `.shtml` files I still cared about.
 Features that are planned or implemented.
 
 - [x] Terrible code organization (initial version in single file).
-- [x] Horrible assumptions ([See: Bugs](#bugs)).
 - [ ] Better-organized code (names, splits).
 - [ ] FastCGI env setup (currently just a cli script w/ config via env vars).
 - [ ] Rename executable from `ssi` to `haskell-ssi`. (maybe worksforme)
@@ -37,13 +36,7 @@ few directives I used back in ~2005.
   - [x] Any other environment variable
 - [x] `<!--#set var="..." value="..."-->`
 - [x] `<!--#include file="..."-->`
-- [ ] `<!--#include virtual="..." -->` (dependent on fixing initial bug).
-
-# Bugs
-
-I wrote the initial version thinking that SSI directives would be found as
-comments in HTML.  Turns out, the files are parsed as text (so, embedding an
-SSI directive within an HTML comment is fine).
+- [ ] `<!--#include virtual="..." -->`
 
 # License
 

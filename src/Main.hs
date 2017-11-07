@@ -13,7 +13,14 @@ import Data.Default (Default(..))
 import Data.List (dropWhile, intercalate, takeWhile)
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.Map as M
-import Data.Maybe (fromJust, isJust, isNothing, maybeToList)
+import Data.Maybe
+  ( catMaybes
+  , fromJust
+  , isJust
+  , isNothing
+  , listToMaybe
+  , maybeToList
+  )
 import qualified Data.Semigroup as Semigroup
 import qualified Data.Set as Set
 import Data.Time.Clock (UTCTime, getCurrentTime)
@@ -23,10 +30,12 @@ import Data.Time.LocalTime (TimeZone, getCurrentTimeZone, utc, utcToLocalTime)
 import System.Directory (canonicalizePath, getCurrentDirectory)
 import System.Environment (getArgs, getEnvironment, lookupEnv)
 import System.FilePath ((</>), isRelative, makeRelative, normalise)
-import Text.HTML.TagSoup (Tag(..), parseTags, renderTags)
+import System.IO (hFlush, hPutStrLn, stderr)
+import Text.HTML.TagSoup (Tag(TagText,TagComment), renderTags)
 import Text.Megaparsec
   ( Dec
   , ErrorItem(Tokens)
+  , Parsec
   , ShowToken(showTokens)
   , SourcePos(SourcePos)
   , Stream
@@ -49,44 +58,21 @@ import Text.Megaparsec
   )
 import Text.Megaparsec.Char (alphaNumChar, anyChar, spaceChar)
 import qualified Text.Megaparsec.Expr as TME
-import Text.Megaparsec.Prim (MonadParsec(..))
+import Text.Megaparsec.Prim (MonadParsec(notFollowedBy,token))
 import Text.Megaparsec.String (Parser)
 import qualified Text.Megaparsec.Lexer as L
 import Text.StringLike (StringLike(..), castString, fromString, toString)
-import qualified Text.StringLike as Str
-
-isSsiTag :: StringLike str => Tag str -> Bool
-isSsiTag (TagComment c) = longEnough c && startsWithHash c
-  where
-    longEnough = (1 <) . B.length . castString
-    startsWithHash = (== "#") . B.take 1 . castString
-isSsiTag _ = False
-
-findSsiTags :: StringLike str => str -> [Tag str]
-findSsiTags = filter isSsiTag . parseTags
-
-getVal :: StringLike str => str -> IO str
-getVal var = lookupEnv (toString var) >>= pure . maybe Str.empty fromString
 
 data SsiComment = SsiComment
   { ssicDirective :: String
   , ssicAttributes :: M.Map String String
-  } deriving (Show)
-
-fromTag :: Tag String -> SsiTokenS
-fromTag t@(TagComment c) = either literal tokenized parsed
-    where
-      parsed = parse ssiComment "" c
-      wrapped = TokLiteral t
-      literal = const wrapped
-      tokenized s = maybe wrapped id $ fromComment s
-fromTag t = TokLiteral t
+  } deriving (Show, Eq)
 
 skipws :: Parser ()
 skipws = skipMany spaceChar
 
 directive :: Parser String
-directive = char '#' >> many alphaNumChar
+directive = string "<!--#" >> some alphaNumChar
 
 keyval :: Parser (String, String)
 keyval = do
@@ -101,13 +87,40 @@ keyval = do
 ssiComment :: Parser SsiComment
 ssiComment = do
   name <- directive <* skipws
-  kvpairs <- many (keyval <* skipws)
+  kvpairs <- (keyval <* skipws) `manyTill` string "-->"
   return SsiComment
     { ssicDirective = name
     , ssicAttributes = M.fromList kvpairs
     }
 
-data SsiToken str = TokLiteral (Tag str)
+data FileToken = FileLiteral B.ByteString
+               | FileSsiComment SsiComment
+               deriving (Show, Eq)
+
+type BParser = Parsec Dec B.ByteString
+
+fileToken :: BParser FileToken
+fileToken = textliteral <|> comment
+  where
+    stoppingAt p = notFollowedBy p >> anyChar
+    textliteral = FileLiteral <$> C.pack <$> some (stoppingAt ssicBeg)
+    ssicBeg = string "<!--#"
+    ssicEnd = string "-->"
+    comment :: BParser FileToken
+    comment = do
+      text <- do
+        s <- ssicBeg
+        i <- many (stoppingAt ssicEnd)
+        e <- ssicEnd
+        return $ concat [s,i,e]
+      case parse ssiComment "" text of
+        Left _ -> return (FileLiteral $ C.pack text)
+        Right parsed -> return $ FileSsiComment parsed
+
+fileTokens :: BParser [FileToken]
+fileTokens = many fileToken
+
+data SsiToken str = TokLiteral str
                   | TokIf str
                   | TokElse
                   | TokEndif
@@ -139,11 +152,27 @@ fromComment SsiComment { ssicDirective = dir, ssicAttributes = attrs }
         Just $ TokIncVirtual (fromString v)
       fromDirAttrs _ _ = Nothing
 
+fileContent :: FileToken -> B.ByteString
+fileContent (FileLiteral l) = l
+fileContent (FileSsiComment c) = C.pack $ concat [start, dir, attrs, end]
+  where
+    start = "<!--#"
+    end = " -->"
+    dir = ssicDirective c
+    attrs = concatMap kvpair $ M.toList (ssicAttributes c)
+    kvpair (k,v) = " " ++ k ++ "=\"" ++ v ++ "\""
+
+fromFileToken :: FileToken -> SsiTokenS
+fromFileToken ft =
+  case ft of
+    FileLiteral l -> TokLiteral $ toString l
+    FileSsiComment ssi -> maybe asLiteral id (fromComment ssi)
+  where
+    asLiteral = TokLiteral $ castString $ fileContent ft
+
 type SsiTokenS = SsiToken String
 
 data SsiStream = SsiStreamL [SsiTokenS]
-
-data SsiExprL = SsiExprL [SsiExpr String]
 
 instance Stream SsiStream where
   type Token SsiStream = SsiTokenS
@@ -154,7 +183,7 @@ instance Stream SsiStream where
 
 expression :: (e ~ Dec, Token s ~ SsiTokenS, MonadParsec e s m) => m [SsiExpr String]
 expression = do
-  choice [ simpleTag >>= pure . (: [])
+  choice [ simpleTag >>= pure . pure
          , ifElseEnd
          ]
 
@@ -190,7 +219,7 @@ simpleExpr TokElse = Nothing
 simpleExpr TokEndif = Nothing
 simpleExpr tok = convert tok
   where
-    convert (TokLiteral tag) = Just $ Literal tag
+    convert (TokLiteral l) = Just $ Literal $ toString l
     convert (TokTime a) = Just $ TimeFormat a
     convert (TokEcho a) = Just $ EchoVar a
     convert (TokSet a b) = Just $ SetVar a b
@@ -206,7 +235,7 @@ satisfy' f = token tst Nothing
          then Right tok
          else Left (Set.singleton (Tokens (tok:|[])), Set.empty, Set.empty)
 
-data SsiExpr str = Literal (Tag str)
+data SsiExpr str = Literal str
                  | TimeFormat str
                  | EchoVar str
                  | SetVar str str
@@ -227,7 +256,11 @@ getExpressionsMaybe :: StringLike str => str -> Maybe [SsiExpr String]
 getExpressionsMaybe = parseMaybe expressions . tokenStream
 
 tokenStream :: StringLike str => str -> SsiStream
-tokenStream = SsiStreamL . fmap fromTag . parseTags . toString
+tokenStream = SsiStreamL . toexprs . orempty . parsetoks . castString
+  where
+    toexprs = fmap fromFileToken
+    orempty = either mempty id
+    parsetoks = parse fileTokens ""
 
 instance ShowToken SsiTokenS where
   showTokens = concatMap show
@@ -262,16 +295,21 @@ withEnvVars env =
      vars <- fmap M.fromList getEnvironment
      return env { ssiVars = M.union vars orig }
 
-ssiAddOutput :: String -> SsiEnvironment -> SsiEnvironment
-ssiAddOutput out env =
+ssiLookupVar :: SsiEnvironment -> String -> Maybe String
+ssiLookupVar env key = M.lookup key $ ssiVars env
+
+ssiAddOutput :: SsiEnvironment -> String -> SsiEnvironment
+ssiAddOutput env out =
   let outs = ssiOutput env
    in env { ssiOutput = outs ++ [out] }
 
 evalAll :: StringLike str => SsiEnvironment -> [SsiExpr str] -> IO SsiEnvironment
 evalAll e [] = pure e
-evalAll e (t:ts) = do
-  e' <- evalTagged e t
-  evalAll e' ts
+evalAll e (t:ts) = eval e t >>= flip evalAll ts
+
+htmlcomment :: String -> String
+htmlcomment txt = renderTags [nl, TagComment $ castString txt, nl]
+  where nl = TagText "\n"
 
 evalTagged :: StringLike str
            => SsiEnvironment
@@ -279,10 +317,6 @@ evalTagged :: StringLike str
            -> IO SsiEnvironment
 evalTagged e' x' = pure (addTag x' e') >>= eval x' >>= pure . endTag x'
   where
-    htmlcomment :: String -> String
-    htmlcomment txt = renderTags [br, TagComment txt, br]
-      where br = TagText "\n"
-
     addComments :: StringLike str => [str] -> SsiEnvironment -> SsiEnvironment
     addComments out env@SsiEnvironment { ssiOutput = outs } =
       env { ssiOutput = outs ++ (htmlcomment . toString <$> out) }
@@ -343,15 +377,14 @@ evalVar env "DATE_LOCAL" = evalTimeInZone env $ ssiTimeZone env
 evalVar env "DATE_GMT" = evalTimeInZone env utc
 evalVar env name =
   let key = toString name
-      val = M.lookup key $ ssiVars env
+      val = ssiLookupVar env key
    in fromString $ maybe "" id val
 
 eval :: StringLike str => SsiExpr str -> SsiEnvironment -> IO SsiEnvironment
 
--- Literal [Tag str]
-eval (Literal tag) env@SsiEnvironment { ssiOutput = outs } =
-  pure env { ssiOutput = outs ++ rendered }
-    where rendered = [toString $ renderTags [tag]]
+-- Literal str
+eval (Literal str) env =
+  pure $ ssiAddOutput env (toString str)
 
 -- TimeFormat str
 eval (TimeFormat f) env = pure env { ssiTimeFormat = toString f }
@@ -359,7 +392,7 @@ eval (TimeFormat f) env = pure env { ssiTimeFormat = toString f }
 -- EchoVar str
 eval (EchoVar name) env =
   let val = toString $ evalVar env name
-   in pure $ ssiAddOutput val env
+   in pure $ ssiAddOutput env val
 
 -- SetVar str str
 eval (SetVar name val) env =
@@ -376,38 +409,82 @@ eval (IfElse expr' ts fs) env =
    in evalAll env branch
 
 -- IncludeVirtual str
-eval (IncludeVirtual expr') env = do
+eval (IncludeVirtual expr') env =
   let expr = safeParseInnerExpr ("\"" ++ (toString expr') ++ "\"")
-      val = evalInnerExpr env expr
-      cmt = renderTags [TagComment val]
-   in pure $ ssiAddOutput cmt env
+      pathinfo = evalInnerExpr env expr
+   in ssiAppendIO env (fetchRemote env pathinfo)
 
 -- IncludeFile FilePath
 eval (IncludeFile file) env =
-  let outs = ssiOutput env
-      root = ssiRootDir env
-      curr = ssiCurrentDir env
-   in do
-     contents <- fetchLocal root curr $ toString file
-     return env { ssiOutput = outs ++ [contents] }
+  ssiAppendIO env (fetchLocal env file)
 
-fetchLocal :: FilePath -> FilePath -> String -> IO String
-fetchLocal root curr path = either blank id <$> Ex.try slurp
+ssiAppendIO :: SsiEnvironment -> IO String -> IO SsiEnvironment
+ssiAppendIO env toadd = ssiAddOutput env <$> toadd
+
+fetchLocal :: SsiEnvironment -> FilePath -> IO String
+fetchLocal env path = do
+  filename <- listToMaybe <$> resolveLocalFiles env (Just path)
+  case filename of
+    Nothing -> return blank
+    Just actual -> either giveup id <$> slurp actual
   where
-    blank = const "" :: Ex.SomeException -> String
-    normal = normalise path
-    toresolve =
-      if isRelative normal
-         then curr </> normal
-         else root </> makeRelative "/" normal
-    testAllowable canon = do
-      if isRelative (makeRelative root canon)
-         then return ()
-         else fail "Not allowed to fetch files outside root"
-    slurp = do
-      canon <- canonicalizePath toresolve
-      testAllowable canon
-      toString <$> C.readFile canon
+    slurp file = Ex.try (toString <$> C.readFile file)
+    blank = "" :: String
+    giveup = const blank :: Ex.SomeException -> String
+
+resolveLocalFiles :: SsiEnvironment -> Maybe FilePath -> IO [FilePath]
+resolveLocalFiles env first =
+  filter allowed <$> fmap translateroot <$> mapM canonicalizePath expanded
+  where
+    defaults :: [FilePath]
+    defaults = normalise <$> catMaybes (first:fromSsiEnv)
+
+    expanded :: [FilePath]
+    expanded = catMaybes cross
+      where
+        cross = [find path | path <- defaults, find <- finders]
+        finders = [absolute, Just . resolve]
+
+    absolute :: FilePath -> Maybe FilePath
+    absolute path = if isRelative path then Nothing else Just path
+
+    resolveIn :: FilePath -> FilePath -> FilePath
+    resolveIn under path =
+      if isRelative path
+         then current </> path
+         else under </> makeRelative "/" path
+
+    resolve :: FilePath -> FilePath
+    resolve = resolveIn docroot
+
+    docroot :: FilePath
+    docroot = maybe ssiroot id (getenv "DOCUMENT_ROOT")
+
+    current :: FilePath
+    current = ssiCurrentDir env
+
+    translateroot :: FilePath -> FilePath
+    translateroot path =
+      if isRelative path
+         then path
+         else ssiroot </> makeRelative docroot path
+
+    ssiroot :: FilePath
+    ssiroot = ssiRootDir env
+
+    allowed :: FilePath -> Bool
+    allowed = isRelative . makeRelative ssiroot
+
+    getenv :: String -> Maybe String
+    getenv = ssiLookupVar env
+
+    fromSsiEnv :: [Maybe FilePath]
+    fromSsiEnv = getenv <$> words "SCRIPT_FILENAME PATH_TRANSLATED"
+
+fetchRemote :: StringLike str => SsiEnvironment -> str -> IO String
+fetchRemote _ = return . htmlcomment . unimplemented . toString
+  where
+    unimplemented = ("TODO #include virtual=\"" ++) . (++ "\"")
 
 data InnerExpr = InnerBool Bool
                | InnerLiteral String
@@ -550,19 +627,49 @@ addVar key val env =
 
 createSsiEnvironment :: IO SsiEnvironment
 createSsiEnvironment = do
-  cwd <- getCurrentDirectory
-  foldM (\env modifier -> modifier env) def
+  realcwd <- getCurrentDirectory
+  ssicwd <- lookupEnv "SSI_CWD"
+  let cwd = maybe realcwd id ssicwd
+  root <- maybe cwd id <$> lookupEnv "SSI_ROOT"
+  foldM (\env modifier -> modifier env) (withdirs root cwd)
     [ fromEnv "SSI_BASE_URL" "https://example.com/" (\env url -> env { ssiBaseUrl = url })
-    , fromEnv "SSI_ROOT" cwd (\env root -> env { ssiRootDir = root })
-    , fromEnv "SSI_CWD" cwd (\env d -> env { ssiCurrentDir = d })
     , \env -> (getCurrentTime >>= \time -> pure env { ssiCurrentTime = time })
     , \env -> (getCurrentTimeZone >>= \zone -> pure env { ssiTimeZone = zone })
     , withEnvVars
     ]
+  where
+    withdirs root cwd = def
+      { ssiRootDir = root
+      , ssiCurrentDir = cwd
+      }
+
+findFiles :: SsiEnvironment -> IO [FilePath]
+findFiles ssi = do
+  fromargs <- getArgs
+  fromenv <- resolveLocalFiles ssi Nothing
+  return (fromargs ++ fromenv)
+
+findFile :: SsiEnvironment -> IO FilePath
+findFile ssi = do
+  files <- listToMaybe <$> findFiles ssi
+  case files of
+    Nothing -> fail "Couldn't determine file to process"
+    Just file -> return file
+
+process :: IO ()
+process = do
+  env <- createSsiEnvironment
+  file <- findFile env
+  stream <- readExprs file
+  result <- evalAll env stream
+  mapM_ putStr (ssiOutput result)
 
 main :: IO ()
-main = do
-  (file:_) <- getArgs
-  env <- createSsiEnvironment
-  stream <- readExprs file
-  evalAll env stream >>= mapM_ putStr . ssiOutput
+main = Ex.handle dumpException process
+  where
+    dumpException :: Ex.SomeException -> IO ()
+    dumpException e = do
+      enabled <- lookupEnv "DBG"
+      if isJust enabled
+         then putStrLn (show e)
+         else hPutStrLn stderr (show e) >> hFlush stderr
