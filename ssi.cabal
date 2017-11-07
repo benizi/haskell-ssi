@@ -27,3 +27,4 @@ executable ssi
                      , mtl == 2.2.*
                      , tagsoup == 0.14.*
                      , time == 1.6.*
+  ghc-options:         -Wall
