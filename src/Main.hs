@@ -5,6 +5,7 @@
 module Main where
 
 import qualified Control.Exception as Ex
+import Control.Lens ((^.))
 import Control.Monad (foldM)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as BL
@@ -27,9 +28,16 @@ import Data.Time.Clock (UTCTime, getCurrentTime)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
 import Data.Time.LocalTime (TimeZone, getCurrentTimeZone, utc, utcToLocalTime)
+import qualified Network.Wreq as Wreq
 import System.Directory (canonicalizePath, getCurrentDirectory)
 import System.Environment (getArgs, getEnvironment, lookupEnv)
-import System.FilePath ((</>), isRelative, makeRelative, normalise)
+import System.FilePath
+  ( (</>)
+  , isRelative
+  , makeRelative
+  , normalise
+  , takeDirectory
+  )
 import System.IO (hFlush, hPutStrLn, stderr)
 import Text.HTML.TagSoup (Tag(TagText,TagComment), renderTags)
 import Text.Megaparsec
@@ -411,7 +419,10 @@ eval (IfElse expr' ts fs) env =
 eval (IncludeVirtual expr') env =
   let expr = safeParseInnerExpr ("\"" ++ (toString expr') ++ "\"")
       pathinfo = evalInnerExpr env expr
-   in ssiAppendIO env (fetchRemote env pathinfo)
+   in ssiAppendIO env (handleErr <$> fetchRemote env pathinfo)
+  where
+    handleErr :: HttpResponseE -> String
+    handleErr = either id responseBody
 
 -- IncludeFile FilePath
 eval (IncludeFile file) env =
@@ -480,10 +491,46 @@ resolveLocalFiles env first =
     fromSsiEnv :: [Maybe FilePath]
     fromSsiEnv = getenv <$> words "SCRIPT_FILENAME PATH_TRANSLATED"
 
-fetchRemote :: StringLike str => SsiEnvironment -> str -> IO String
-fetchRemote _ = return . htmlcomment . unimplemented . toString
+type HttpResponse = Wreq.Response BL.ByteString
+
+type HttpResponseE = Either String HttpResponse
+
+getHTTP :: String -> IO HttpResponseE
+getHTTP url = Ex.handle toError fetch
   where
-    unimplemented = ("TODO #include virtual=\"" ++) . (++ "\"")
+    fetch :: IO HttpResponseE
+    fetch = Right <$> Wreq.get url
+    toError :: Ex.SomeException -> IO HttpResponseE
+    toError _ = pure $ Left ("Failed to fetch [" ++ url ++ "]")
+
+responseBody :: HttpResponse -> String
+responseBody res = C.unpack $ BL.toStrict $ res ^. Wreq.responseBody
+
+urlFor :: String -> String -> String -> String -> String
+urlFor scheme host port path = concat [scheme, "://", host, ":", port, path]
+
+fetchRemote :: StringLike str => SsiEnvironment -> str -> IO HttpResponseE
+fetchRemote env reqpathStr = do
+  host <- needvar "SERVER_NAME"
+  port <- needvar "SERVER_PORT"
+  path <- if isRelative reqpath
+             then (`makeRelative` reqpath) <$> takeDirectory <$> currpath
+             else pure reqpath
+  getHTTP (urlFor scheme host port path)
+  where
+    reqpath :: FilePath
+    reqpath = toString reqpathStr
+    getvar :: String -> Maybe String
+    getvar = ssiLookupVar env
+    needvar :: String -> IO String
+    needvar var =
+      case getvar var of
+        Nothing -> fail $ "Missing var " ++ var
+        Just val -> return val
+    scheme :: String
+    scheme = if isJust (getvar "HTTPS") then "https" else "http"
+    currpath :: IO String
+    currpath = needvar "PATH_INFO"
 
 data InnerExpr = InnerBool Bool
                | InnerLiteral String
