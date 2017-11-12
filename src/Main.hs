@@ -1,6 +1,12 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeFamilies #-}
+
+#ifdef FAKE_CONTENT
+{-# LANGUAGE PatternGuards #-}
+{-# LANGUAGE QuasiQuotes #-}
+#endif
 
 module Main where
 
@@ -10,7 +16,7 @@ import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Char8 as C
 import Data.Default (Default(..))
-import Data.List (dropWhile, intercalate, isSuffixOf, takeWhile)
+import Data.List (dropWhile, intercalate, isPrefixOf, isSuffixOf, takeWhile)
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.Map as M
 import Data.Maybe
@@ -27,7 +33,11 @@ import Data.Time.Clock (UTCTime, getCurrentTime)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
 import Data.Time.LocalTime (TimeZone, getCurrentTimeZone, utc, utcToLocalTime)
+#ifdef FAKE_CONTENT
+import qualified FakeWreq as Wreq
+#else
 import qualified Network.Wreq as Wreq
+#endif
 import System.Directory (canonicalizePath, getCurrentDirectory)
 import System.Environment (getArgs, getEnvironment, lookupEnv)
 import System.FilePath
@@ -513,6 +523,32 @@ type HttpResponse = Wreq.Response BL.ByteString
 type HttpResponseE = Either String HttpResponse
 
 getHTTP :: String -> IO HttpResponseE
+#ifdef FAKE_CONTENT
+getHTTP url
+  | url == (fake ++ "f")
+  = pure $ asResponse $ [heredoc|Just testing setting some SSI vars
+<!--#set var="B" value="b" -->
+before <!--#echo var="A" --> <!--#echo var="B" -->
+<!--#if expr="${A}=\"a\"" -->
+yep <!--#echo var="A" --> <!--#echo var="B" -->
+<!--#else -->
+nope <!--#echo var="A" --> <!--#echo var="B" -->
+<!--#endif -->
+after <!--#echo var="A" --> <!--#echo var="B" -->
+|]
+  | url `startsWith` fake = local (url `without` fake)
+  | otherwise = Ex.handle toError fetch
+  where
+    fake = "http://a:80/"
+    startsWith = flip isPrefixOf
+    a `without` b = drop (length a) b
+    local path = do
+      root <- lookupEnv "SSI_ROOT"
+      case root of
+        Nothing -> pure $ asResponse $ C.pack $ htmlcomment url
+        Just base -> asResponse <$> toString <$> B.readFile (base </> path)
+    asResponse = Right . Wreq.Response . BL.fromStrict
+#endif
 getHTTP url = Ex.handle toError fetch
   where
     fetch :: IO HttpResponseE
