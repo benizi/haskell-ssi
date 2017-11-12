@@ -16,7 +16,10 @@ import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Char8 as C
 import Data.Default (Default(..))
-import Data.List (dropWhile, intercalate, isPrefixOf, isSuffixOf, takeWhile)
+import Data.List (dropWhile, intercalate, isSuffixOf, takeWhile)
+#ifdef FAKE_CONTENT
+import Data.List (isPrefixOf)
+#endif
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.Map as M
 import Data.Maybe
