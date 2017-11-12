@@ -264,6 +264,32 @@ data SsiExpr str = Literal str
                  | IncludeFile FilePath
                  deriving (Show)
 
+exprToString :: StringLike str => SsiExpr str -> str
+exprToString = stringify
+  where
+    stringify :: StringLike str => SsiExpr str -> str
+    stringify (Literal l) = l
+    stringify (TimeFormat fmt) = dir "config" ["timefmt" @= fmt]
+    stringify (EchoVar var) = dir "echo" ["name" @= var]
+    stringify (SetVar val var) = dir "set" ["var" @= var, "value" @= val]
+    stringify (IfElse expr ts fs) =
+      let if' = [dir "if" ["expr" @= expr]] ++ block ts
+          else' = if null fs then [] else [dir' "else"] ++ block fs
+          end' = [dir' "endif"]
+          block = fmap stringify
+       in strConcat (if' ++ else' ++ end')
+    stringify (IncludeVirtual virt) = dir "include" ["virtual" @= virt]
+    stringify (IncludeFile file) = dir "include" ["file" @= fromString file]
+    dir :: StringLike str => str -> [str] -> str
+    dir cmd atts = strConcat $ ["<!--#", cmd] ++ atts ++ [" -->"]
+    dir' :: StringLike str => str -> str
+    dir' cmd = dir cmd []
+    (@=) :: StringLike str => str -> str -> str
+    att @= val = strConcat [" ", att, "=\"", val, "\""]
+
+exprsToString :: StringLike str => [SsiExpr str] -> str
+exprsToString = foldl (\s e -> append s (exprToString e)) empty
+
 type SsiVars = M.Map String String
 
 (~>) :: StringLike str => str -> str -> Bool
