@@ -36,7 +36,7 @@ few directives I used back in ~2005.
   - [x] Any other environment variable
 - [x] `<!--#set var="..." value="..."-->`
 - [x] `<!--#include file="..."-->`
-- [ ] `<!--#include virtual="..." -->`
+- [x] `<!--#include virtual="..." -->`
 
 # License
 
