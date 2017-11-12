@@ -10,7 +10,7 @@ import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Char8 as C
 import Data.Default (Default(..))
-import Data.List (dropWhile, intercalate, takeWhile)
+import Data.List (dropWhile, intercalate, isSuffixOf, takeWhile)
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.Map as M
 import Data.Maybe
@@ -430,17 +430,23 @@ eval (IfElse expr' ts fs) env =
 eval (IncludeVirtual expr') env =
   let expr = safeParseInnerExpr ("\"" ++ (toString expr') ++ "\"")
       pathinfo = evalInnerExpr env expr
-   in ssiAppendIO env (handleErr <$> fetchRemote env pathinfo)
+      path' = toString pathinfo
+      fetch = if isSuffixOf ".shtml" path' then local else remote
+   in fetch pathinfo >>= reprocess path'
   where
-    handleErr :: HttpResponseE -> String
-    handleErr = either id responseBody
+    local :: String -> IO String
+    local = fetchLocal env
+    remote :: String -> IO String
+    remote pathinfo =
+      either htmlcomment responseBody <$> fetchRemote env pathinfo
+    reprocess :: String -> String -> IO SsiEnvironment
+    reprocess path content =
+      let exprs = exprStream path $ C.pack content
+       in evalAll exprs env
 
 -- IncludeFile FilePath
 eval (IncludeFile file) env =
-  ssiAppendIO env (fetchLocal env file)
-
-ssiAppendIO :: SsiEnvironment -> IO String -> IO SsiEnvironment
-ssiAppendIO env toadd = ssiAddOutput env <$> toadd
+  ssiAddOutput env <$> fetchLocal env file
 
 fetchLocal :: SsiEnvironment -> FilePath -> IO String
 fetchLocal env path = do
