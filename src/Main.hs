@@ -588,6 +588,7 @@ getHTTP url = Ex.handle toError fetch
 responseBody :: HttpResponse -> String
 responseBody res = C.unpack $ BL.toStrict $ res ^. Wreq.responseBody
 
+-- TODO: use a real URL library
 urlFor :: String -> String -> String -> String -> String
 urlFor scheme host port path = concat [scheme, "://", host, ":", port, path]
 
