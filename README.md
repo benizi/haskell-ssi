@@ -29,7 +29,7 @@ few directives I used back in ~2005.
 - [ ] `<!--#echo var="..."-->` where var is ...
   - [x] `DATE_LOCAL`
   - [x] `DATE_GMT`
-  - [ ] `LAST_MODIFIED`
+  - [x] `LAST_MODIFIED`
   - [ ] `DOCUMENT_URI` (might just copy from `$REQUEST_URI`) (maybe wontfix)
   - [ ] `DOCUMENT_NAME` (maybe wontfix)
   - [ ] `QUERY_STRING_UNESCAPED` (maybe wontfix)

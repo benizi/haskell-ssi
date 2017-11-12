@@ -41,7 +41,11 @@ import qualified FakeWreq as Wreq
 #else
 import qualified Network.Wreq as Wreq
 #endif
-import System.Directory (canonicalizePath, getCurrentDirectory)
+import System.Directory
+  ( canonicalizePath
+  , getCurrentDirectory
+  , getModificationTime
+  )
 import System.Environment (getArgs, getEnvironment, lookupEnv)
 import System.FilePath
   ( (</>)
@@ -316,6 +320,7 @@ data SsiEnvironment = SsiEnvironment
   , ssiTimeFormat :: String
   , ssiCurrentTime :: UTCTime
   , ssiTimeZone :: TimeZone
+  , ssiLastModified :: UTCTime
   , ssiRootDir :: FilePath
   , ssiCurrentDir :: FilePath
   , ssiOutput :: [String]
@@ -327,6 +332,7 @@ instance Default SsiEnvironment where
     , ssiTimeFormat = fromString "%F@%T"
     , ssiCurrentTime = posixSecondsToUTCTime 0
     , ssiTimeZone = utc
+    , ssiLastModified = posixSecondsToUTCTime 0
     , ssiRootDir = "/"
     , ssiCurrentDir = "/"
     , ssiOutput = []
@@ -345,6 +351,9 @@ setSsiDirectories env realcwd =
 setTimeAndZone :: SsiEnvironment -> UTCTime -> TimeZone -> SsiEnvironment
 setTimeAndZone env time zone =
   env { ssiCurrentTime = time, ssiTimeZone = zone }
+
+setLastModified :: SsiEnvironment -> UTCTime -> SsiEnvironment
+setLastModified env lastmod = env { ssiLastModified = lastmod }
 
 ssiLookupVar :: SsiEnvironment -> String -> Maybe String
 ssiLookupVar = (flip M.lookup) . ssiVars
@@ -422,16 +431,25 @@ evalTagged e' x' = pure (addTag x' e') >>= eval x' >>= pure . endTag x'
             IncludeVirtual virt -> args' [toString virt]
             IncludeFile file -> args' [toString file]
 
-evalTimeInZone :: StringLike str => SsiEnvironment -> TimeZone -> str
-evalTimeInZone env zone =
-  let time = utcToLocalTime zone $ ssiCurrentTime env
+evalTimeInZone
+  :: StringLike str
+  => SsiEnvironment
+  -> UTCTime
+  -> TimeZone
+  -> str
+evalTimeInZone env time zone =
+  let ltime = utcToLocalTime zone time
       fmt = ssiTimeFormat env
       locale = defaultTimeLocale
-   in fromString $ formatTime locale fmt time
+   in fromString $ formatTime locale fmt ltime
+
+evalTimeLocal :: StringLike str => SsiEnvironment -> UTCTime -> str
+evalTimeLocal env time = evalTimeInZone env time (ssiTimeZone env)
 
 evalVar :: StringLike str => SsiEnvironment -> str -> str
-evalVar env "DATE_LOCAL" = evalTimeInZone env $ ssiTimeZone env
-evalVar env "DATE_GMT" = evalTimeInZone env utc
+evalVar env "DATE_LOCAL" = evalTimeLocal env (ssiCurrentTime env)
+evalVar env "DATE_GMT" = evalTimeInZone env (ssiCurrentTime env) utc
+evalVar env "LAST_MODIFIED" = evalTimeLocal env (ssiLastModified env)
 evalVar env name =
   let key = toString name
       val = ssiLookupVar env key
@@ -751,7 +769,7 @@ fromEnv key defval setter orig = do
 
 createSsiEnvironment :: IO SsiEnvironment
 createSsiEnvironment =
-  mergeEnvVarsIO def >>= setSsiDirectoriesIO >>= setTimeAndZoneIO
+  mergeEnvVarsIO def >>= setSsiDirectoriesIO >>= setAllTimeInfoIO
 
 mergeEnvVarsIO :: SsiEnvironment -> IO SsiEnvironment
 mergeEnvVarsIO env = mergeEnvVars env <$> getEnvironment
@@ -764,6 +782,15 @@ setTimeAndZoneIO env = do
   time <- getCurrentTime
   zone <- getCurrentTimeZone
   pure $ setTimeAndZone env time zone
+
+setLastModifiedIO :: SsiEnvironment -> IO SsiEnvironment
+setLastModifiedIO env = do
+  file <- findFile env
+  lastmod <- getModificationTime file
+  return $ setLastModified env lastmod
+
+setAllTimeInfoIO :: SsiEnvironment -> IO SsiEnvironment
+setAllTimeInfoIO env = setTimeAndZoneIO env >>= setLastModifiedIO
 
 findFiles :: SsiEnvironment -> IO [FilePath]
 findFiles ssi = do
