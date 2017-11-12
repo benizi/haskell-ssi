@@ -278,7 +278,6 @@ data SsiEnvironment = SsiEnvironment
   , ssiTimeFormat :: String
   , ssiCurrentTime :: UTCTime
   , ssiTimeZone :: TimeZone
-  , ssiBaseUrl :: String
   , ssiRootDir :: FilePath
   , ssiCurrentDir :: FilePath
   , ssiOutput :: [String]
@@ -290,21 +289,33 @@ instance Default SsiEnvironment where
     , ssiTimeFormat = fromString "%F@%T"
     , ssiCurrentTime = posixSecondsToUTCTime 0
     , ssiTimeZone = utc
-    , ssiBaseUrl = fromString ""
     , ssiRootDir = "/"
     , ssiCurrentDir = "/"
     , ssiOutput = []
     }
 
-withEnvVars :: SsiEnvironment -> IO SsiEnvironment
-withEnvVars env =
-  let orig = ssiVars env
-   in do
-     vars <- fmap M.fromList getEnvironment
-     return env { ssiVars = M.union vars orig }
+mergeEnvVars :: SsiEnvironment -> [(String,String)] -> SsiEnvironment
+mergeEnvVars env vars = ssiModifyVars env (`M.union` M.fromList vars)
+
+setSsiDirectories :: SsiEnvironment -> String -> SsiEnvironment
+setSsiDirectories env realcwd =
+  let ssicwd = ssiLookupVar env "SSI_CWD"
+      cwd = maybe realcwd id ssicwd
+      root = maybe cwd id (ssiLookupVar env "SSI_ROOT")
+   in env { ssiRootDir = root, ssiCurrentDir = cwd }
+
+setTimeAndZone :: SsiEnvironment -> UTCTime -> TimeZone -> SsiEnvironment
+setTimeAndZone env time zone =
+  env { ssiCurrentTime = time, ssiTimeZone = zone }
 
 ssiLookupVar :: SsiEnvironment -> String -> Maybe String
-ssiLookupVar env key = M.lookup key $ ssiVars env
+ssiLookupVar = (flip M.lookup) . ssiVars
+
+ssiModifyVars :: SsiEnvironment -> (SsiVars -> SsiVars) -> SsiEnvironment
+ssiModifyVars env f = env { ssiVars = f (ssiVars env) }
+
+ssiInsertVar :: SsiEnvironment -> String -> String -> SsiEnvironment
+ssiInsertVar env key val = ssiModifyVars env (M.insert key val)
 
 ssiAddOutput :: SsiEnvironment -> String -> SsiEnvironment
 ssiAddOutput env out =
@@ -666,28 +677,21 @@ fromEnv key defval setter orig = do
   let val = maybe defval id ret
    in return $ setter orig val
 
-addVar :: String -> String -> SsiEnvironment -> SsiEnvironment
-addVar key val env =
-  let vars = ssiVars env
-   in env { ssiVars = M.insert key val vars }
-
 createSsiEnvironment :: IO SsiEnvironment
-createSsiEnvironment = do
-  realcwd <- getCurrentDirectory
-  ssicwd <- lookupEnv "SSI_CWD"
-  let cwd = maybe realcwd id ssicwd
-  root <- maybe cwd id <$> lookupEnv "SSI_ROOT"
-  foldM (\env modifier -> modifier env) (withdirs root cwd)
-    [ fromEnv "SSI_BASE_URL" "https://example.com/" (\env url -> env { ssiBaseUrl = url })
-    , \env -> (getCurrentTime >>= \time -> pure env { ssiCurrentTime = time })
-    , \env -> (getCurrentTimeZone >>= \zone -> pure env { ssiTimeZone = zone })
-    , withEnvVars
-    ]
-  where
-    withdirs root cwd = def
-      { ssiRootDir = root
-      , ssiCurrentDir = cwd
-      }
+createSsiEnvironment =
+  mergeEnvVarsIO def >>= setSsiDirectoriesIO >>= setTimeAndZoneIO
+
+mergeEnvVarsIO :: SsiEnvironment -> IO SsiEnvironment
+mergeEnvVarsIO env = mergeEnvVars env <$> getEnvironment
+
+setSsiDirectoriesIO :: SsiEnvironment -> IO SsiEnvironment
+setSsiDirectoriesIO env = setSsiDirectories env <$> getCurrentDirectory
+
+setTimeAndZoneIO :: SsiEnvironment -> IO SsiEnvironment
+setTimeAndZoneIO env = do
+  time <- getCurrentTime
+  zone <- getCurrentTimeZone
+  pure $ setTimeAndZone env time zone
 
 findFiles :: SsiEnvironment -> IO [FilePath]
 findFiles ssi = do
