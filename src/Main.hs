@@ -6,7 +6,6 @@ module Main where
 
 import qualified Control.Exception as Ex
 import Control.Lens ((^.))
-import Control.Monad (foldM)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Char8 as C
@@ -322,8 +321,9 @@ ssiAddOutput env out =
   let outs = ssiOutput env
    in env { ssiOutput = outs ++ [out] }
 
-evalAll :: StringLike str => SsiEnvironment -> [SsiExpr str] -> IO SsiEnvironment
-evalAll = foldM (flip eval)
+evalAll :: StringLike str => [SsiExpr str] -> SsiEnvironment -> IO SsiEnvironment
+evalAll [] e = pure e
+evalAll (x:xs) e = eval x e >>= evalAll xs
 
 htmlcomment :: String -> String
 htmlcomment txt = renderTags [nl, TagComment $ castString txt, nl]
@@ -424,7 +424,7 @@ eval (SetVar name val) env =
 eval (IfElse expr' ts fs) env =
   let expr = safeParseInnerExpr expr'
       branch = if evalInnerExprBool env expr then ts else fs
-   in evalAll env branch
+   in evalAll branch env
 
 -- IncludeVirtual str
 eval (IncludeVirtual expr') env =
@@ -711,7 +711,7 @@ process = do
   env <- createSsiEnvironment
   file <- findFile env
   stream <- readExprs file
-  result <- evalAll env stream
+  result <- evalAll stream env
   mapM_ putStr (ssiOutput result)
 
 main :: IO ()
