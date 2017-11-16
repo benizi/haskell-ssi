@@ -12,6 +12,7 @@ module Main where
 
 import qualified Control.Exception as Ex
 import Control.Lens ((^.))
+import Control.Monad (filterM)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Char8 as C
@@ -43,6 +44,8 @@ import qualified Network.Wreq as Wreq
 #endif
 import System.Directory
   ( canonicalizePath
+  , doesDirectoryExist
+  , doesFileExist
   , getCurrentDirectory
   , getModificationTime
   )
@@ -792,11 +795,17 @@ setLastModifiedIO env = do
 setAllTimeInfoIO :: SsiEnvironment -> IO SsiEnvironment
 setAllTimeInfoIO env = setTimeAndZoneIO env >>= setLastModifiedIO
 
+directoryIndex :: FilePath -> IO FilePath
+directoryIndex d = do
+  dirExists <- doesDirectoryExist d
+  return $ if dirExists then d </> "index.shtml" else d
+
 findFiles :: SsiEnvironment -> IO [FilePath]
 findFiles ssi = do
   fromargs <- getArgs
   fromenv <- resolveLocalFiles ssi Nothing
-  return (fromargs ++ fromenv)
+  paths <- mapM directoryIndex (fromargs ++ fromenv)
+  filterM doesFileExist paths
 
 findFile :: SsiEnvironment -> IO FilePath
 findFile ssi = do
