@@ -611,7 +611,9 @@ responseBody res = C.unpack $ BL.toStrict $ res ^. Wreq.responseBody
 
 -- TODO: use a real URL library
 urlFor :: String -> String -> String -> String -> String
-urlFor scheme host port path = concat [scheme, "://", host, ":", port, path]
+urlFor scheme host port path = concat [scheme, "://", host, ":", port, path']
+  where
+    path' = if isRelative path then "/" </> path else path
 
 fetchRemote :: StringLike str => SsiEnvironment -> str -> IO HttpResponseE
 fetchRemote env reqpathStr = do
